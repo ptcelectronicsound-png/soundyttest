@@ -15,13 +15,19 @@ button,input{font:inherit}
 input[type=text]{width:100%;padding:12px;border-radius:10px;border:1px solid var(--bd);background:var(--card);color:var(--tx)}
 button{background:var(--ac);color:#fff;border:0;border-radius:10px;padding:12px 16px;cursor:pointer;font-weight:600}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:14px}
-#screen{display:grid;grid-template-columns:340px 1fr;grid-template-rows:auto 1fr;gap:14px;height:100%;padding:14px}
-#qrbox{text-align:center}
+#screen{display:grid;grid-template-columns:340px 1fr 250px;grid-template-rows:auto 1fr;gap:14px;height:100%;padding:14px}
+#qrbox{text-align:center;grid-column:1;grid-row:1}
 #qr{display:inline-block;background:#fff;padding:16px;border-radius:12px;margin-top:6px}
 #qr img,#qr canvas{display:block}
 #videoBox{grid-column:2;grid-row:1/3;position:relative;background:#000;border-radius:16px;overflow:hidden}
 #player,#player iframe,#player video{width:100%;height:100%;border:0;display:block}
-#chatBox{display:flex;flex-direction:column;min-height:0}
+#queueBox{grid-column:3;grid-row:1/3;display:flex;flex-direction:column;min-height:0;gap:8px}
+#qlist{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;min-height:0}
+.qi{display:flex;gap:8px;align-items:center;padding:8px 10px;border-radius:10px;background:var(--bg);font-size:14px}
+.qi .n{color:var(--ac);font-weight:700;min-width:18px}
+.qi .t{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.qi .b{font-size:12px;color:var(--mu)}
+#chatBox{grid-column:1;grid-row:2;display:flex;flex-direction:column;min-height:0}
 .msgs{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px;min-height:0}
 .msg b{color:var(--ac)}
 .small{font-size:13px;color:var(--mu)}
@@ -35,7 +41,10 @@ button{background:var(--ac);color:#fff;border:0;border-radius:10px;padding:12px 
 #remote .msgs{max-height:50vh;min-height:200px}
 .row{display:flex;gap:8px}
 label.file{display:block;border:2px dashed var(--bd);border-radius:12px;padding:14px;text-align:center;color:var(--mu);cursor:pointer}
-@media (max-width:800px){#screen{grid-template-columns:1fr;grid-template-rows:auto 40vh 1fr;overflow:auto;height:auto}#videoBox{grid-column:1;grid-row:2}}
+@media (max-width:800px){
+  #screen{grid-template-columns:1fr;grid-template-rows:auto 40vh auto auto;overflow:auto;height:auto}
+  #qrbox{grid-row:1}#videoBox{grid-column:1;grid-row:2}#queueBox{grid-column:1;grid-row:3;max-height:220px}#chatBox{grid-column:1;grid-row:4;min-height:200px}
+}
 </style>
 </head>
 <body>
@@ -45,13 +54,13 @@ label.file{display:block;border:2px dashed var(--bd);border-radius:12px;padding:
     <b>สแกนเพื่อขอเพลง / แชท</b><br>
     <div id="qr"></div>
     <div id="qrUrl" class="small" style="word-break:break-all;margin-top:8px"></div>
-    <div class="small" id="queueInfo"></div>
   </div>
   <div id="videoBox">
     <div id="player"></div>
     <div id="overlay"><div style="font-size:28px;font-weight:700">🎵 ขอเพลงหน้าจอ</div><div id="ovText">สแกน QR เพื่อขอเพลง</div><button id="startBtn">▶ เริ่มเล่น</button></div>
     <div id="nowbar" class="hide"><span id="nowTxt"></span><button id="skipBtn">ข้าม ⏭</button></div>
   </div>
+  <div id="queueBox" class="card"><b id="qhead">🎶 คิวเพลง</b><div id="qlist"></div></div>
   <div id="chatBox" class="card"><b style="margin-bottom:6px">💬 แชท</b><div class="msgs" id="msgsS"></div></div>
 </div>
 
@@ -77,12 +86,16 @@ label.file{display:block;border:2px dashed var(--bd);border-radius:12px;padding:
 <script>
 const isRemote = location.pathname === "/remote";
 const $ = id => document.getElementById(id);
-let queue = [], chat = [], curId = null, started = false;
+let queue = [], chat = [];
+let started = false, cur = null, lastId = null, token = 0;   // เฉพาะจอใหญ่
+let ytReady = false, ytWait = null;
+const titles = {};                                            // ชื่อเพลง YouTube ที่ดึงมาได้
 
 const post = (url, data) => fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(data)});
 const ytId = u => { const m = String(u).match(/(?:youtu\.be\/|v=|embed\/|shorts\/|live\/)([A-Za-z0-9_-]{11})/); return m ? m[1] : null; };
 const nick = () => ($("nick").value || "").trim() || "ไม่ระบุชื่อ";
 const pending = () => queue.filter(x => !x.played);
+const nameOf = it => it.type === "yt" ? (titles[it.vid] || it.title) : it.title;
 
 function renderChat(el){
   el.textContent = "";
@@ -93,38 +106,80 @@ function renderChat(el){
   });
   el.scrollTop = el.scrollHeight;
 }
-function onQueue(){
+
+/* ---------- รายการคิว ---------- */
+function renderQueue(){
   const p = pending();
   if (isRemote){ $("queueR").textContent = p.length ? "คิวเพลงตอนนี้: " + p.length + " เพลง" : "ยังไม่มีคิว ขอเพลงแรกได้เลย!"; return; }
-  $("queueInfo").textContent = p.length > 1 ? "คิวถัดไป " + (p.length - 1) + " เพลง" : "";
-  const cur = p[0];
-  if (!cur){
-    curId = null; $("player").textContent = ""; $("nowbar").classList.add("hide");
-    $("overlay").classList.remove("hide"); $("startBtn").classList.toggle("hide", started);
-    $("ovText").textContent = "สแกน QR เพื่อขอเพลง"; return;
-  }
-  if (!started){ $("ovText").textContent = "มีเพลงในคิวแล้ว กดเริ่มเล่น"; return; }
-  if (cur.id !== curId) play(cur);
+  $("qhead").textContent = "🎶 คิวเพลง (" + p.length + ")";
+  const box = $("qlist"); box.textContent = "";
+  if (!p.length){ const e = document.createElement("div"); e.className = "small"; e.textContent = "ยังไม่มีคิว"; box.append(e); }
+  p.forEach((it, i) => {
+    const r = document.createElement("div"); r.className = "qi";
+    const n = document.createElement("span"); n.className = "n"; n.textContent = i + 1;
+    const w = document.createElement("div"); w.style.minWidth = 0;
+    const t = document.createElement("div"); t.className = "t"; t.textContent = nameOf(it);
+    const b = document.createElement("div"); b.className = "b t"; b.textContent = "ขอโดย " + it.by;
+    w.append(t, b); r.append(n, w); box.append(r);
+    if (it.type === "yt" && !titles[it.vid]){
+      titles[it.vid] = "";            // กันดึงซ้ำ
+      fetch("https://www.youtube.com/oembed?format=json&url=" + encodeURIComponent("https://www.youtube.com/watch?v=" + it.vid))
+        .then(r => r.json()).then(j => { titles[it.vid] = j.title || ""; renderQueue(); }).catch(() => {});
+    }
+  });
 }
-function play(cur){
-  curId = cur.id;
+
+/* ---------- ตัวเล่น (จอใหญ่) ---------- */
+function onQueue(){
+  renderQueue();
+  if (!isRemote && started && !cur) pickNext();        // ว่างอยู่ แล้วมีเพลงเข้ามา → เล่นเลย
+}
+function pickNext(){
+  const p = pending();
+  if (p.length){                                        // มีคิว → เล่นคิวก่อนเสมอ
+    p[0].played = true; post("/api/start", {id:p[0].id});
+    return startPlay(p[0], false);
+  }
+  const old = queue.filter(x => x.played);              // ไม่มีคิว → สุ่มเพลงเก่า
+  const pool = old.filter(x => x.id !== lastId);
+  const list = pool.length ? pool : old;
+  if (list.length) return startPlay(list[Math.floor(Math.random() * list.length)], true);
+  cur = null; $("player").textContent = ""; $("nowbar").classList.add("hide");
+  $("overlay").classList.remove("hide"); $("startBtn").classList.add("hide");
+  $("ovText").textContent = "สแกน QR เพื่อขอเพลง";
+}
+function ended(my){
+  if (my !== token) return;                             // กันเรียกซ้ำ
+  lastId = cur && cur.id; cur = null; pickNext();
+}
+function startPlay(it, fromOld){
+  cur = it; const my = ++token;
   $("overlay").classList.add("hide"); $("nowbar").classList.remove("hide");
-  $("nowTxt").textContent = "▶ " + cur.title + " · ขอโดย " + cur.by;
+  const label = () => "▶ " + nameOf(it) + " · ขอโดย " + it.by + (fromOld ? "  🔀 สุ่มจากเพลงเก่า" : "");
+  $("nowTxt").textContent = label();
   const box = $("player"); box.textContent = "";
-  if (cur.type === "yt"){
-    const f = document.createElement("iframe");
-    f.src = "https://www.youtube.com/embed/" + encodeURIComponent(cur.vid) + "?autoplay=1&rel=0";
-    f.allow = "autoplay; encrypted-media; fullscreen"; f.allowFullscreen = true;
-    f.referrerPolicy = "strict-origin-when-cross-origin";
-    box.append(f);
+  if (it.type === "yt"){
+    if (!ytReady){ ytWait = () => { if (my === token) startPlay(it, fromOld); }; return; }
+    const d = document.createElement("div"); d.id = "ytp"; box.append(d);
+    new YT.Player("ytp", {
+      videoId: it.vid, width: "100%", height: "100%",
+      playerVars: {autoplay:1, rel:0, playsinline:1},
+      events: {
+        onReady: e => { e.target.playVideo(); try { const t = e.target.getVideoData().title; if (t){ titles[it.vid] = t; $("nowTxt").textContent = label(); } } catch(_){} },
+        onStateChange: e => { if (e.data === 0) ended(my); },   // 0 = จบคลิป
+        onError: () => ended(my)                                // ฝังไม่ได้/ถูกลบ → ข้าม
+      }
+    });
   } else {
     const v = document.createElement("video");
-    v.src = cur.url; v.controls = true; v.autoplay = true;
-    v.addEventListener("ended", next); box.append(v);
+    v.src = it.url; v.controls = true; v.autoplay = true;
+    v.addEventListener("ended", () => ended(my));
+    v.addEventListener("error", () => ended(my));
+    box.append(v);
   }
 }
-function next(){ const c = pending()[0]; if (c) post("/api/next", {id:c.id}); }
 
+/* ---------- เริ่มต้น ---------- */
 function connect(){
   const es = new EventSource("/events");
   es.onmessage = e => {
@@ -132,19 +187,20 @@ function connect(){
     onQueue(); renderChat($(isRemote ? "msgsR" : "msgsS"));
   };
 }
-
 async function initScreen(){
   $("screen").classList.remove("hide");
+  window.onYouTubeIframeAPIReady = () => { ytReady = true; if (ytWait){ const f = ytWait; ytWait = null; f(); } };
+  const sc = document.createElement("script"); sc.src = "https://www.youtube.com/iframe_api"; document.head.append(sc);
   let url = location.origin + "/remote";
   if (["localhost","127.0.0.1"].includes(location.hostname)){
     try { const i = await (await fetch("/api/info")).json();
       if (i.ips[0]) url = "http://" + i.ips[0] + ":" + i.port + "/remote"; } catch(e){}
   }
   try { new QRCode($("qr"), {text:url, width:240, height:240, correctLevel:QRCode.CorrectLevel.L}); }
-  catch(e){ $("qr").textContent = "QR ไม่ขึ้น (ต้องต่ออินเทอร์เน็ตเพื่อโหลดตัวสร้าง QR)"; }
+  catch(e){ $("qr").textContent = "QR ไม่ขึ้น (ต้องต่ออินเทอร์เน็ต)"; }
   $("qrUrl").textContent = url;
-  $("startBtn").onclick = () => { started = true; $("startBtn").classList.add("hide"); onQueue(); };
-  $("skipBtn").onclick = next;
+  $("startBtn").onclick = () => { started = true; $("startBtn").classList.add("hide"); $("ovText").textContent = "สแกน QR เพื่อขอเพลง"; if (!cur) pickNext(); };
+  $("skipBtn").onclick = () => ended(token);
 }
 function initRemote(){
   $("remote").classList.remove("hide");

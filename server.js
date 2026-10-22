@@ -9,8 +9,10 @@ let queue = [], chat = [];
 const clients = new Set();
 const mime = { '.html': 'text/html; charset=utf-8', '.mp3': 'audio/mpeg', '.mp4': 'video/mp4' };
 const clip = (s, n) => String(s || '').trim().slice(0, n);
-const snapshot = () => JSON.stringify({ queue: queue.slice(-200), chat: chat.slice(-100) });
-const push = () => { const d = 'data: ' + snapshot() + '\n\n'; for (const c of clients) c.write(d); };
+const snapshot = () => JSON.stringify({ queue, chat: chat.slice(-100) });
+const push = () => {
+  if (queue.length > 300) { const i = queue.findIndex(x => x.played); if (i >= 0) { const [d] = queue.splice(i, 1); if (d.type === 'file') fs.unlink(path.join(UP, path.basename(d.url)), () => {}); } }
+  const d = 'data: ' + snapshot() + '\n\n'; for (const c of clients) c.write(d); };
 setInterval(() => { for (const c of clients) c.write(': ping\n\n'); }, 20000);
 
 const send = (res, code, text) => { res.writeHead(code, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end(text); };
@@ -68,7 +70,7 @@ http.createServer(async (req, res) => {
         chat.push({ name: clip(b.name, 24) || 'ไม่ระบุชื่อ', text, t: Date.now() });
         push(); return json(res, { ok: true });
       }
-      if (p === '/api/next') {
+      if (p === '/api/next' || p === '/api/start') {
         const b = await readJson(req), it = queue.find(x => x.id === b.id);
         if (it) { it.played = true; push(); }
         return json(res, { ok: true });
